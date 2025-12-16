@@ -21,85 +21,25 @@ pub fn build(b: *std.Build) void {
     lib_options.addOption(bool, "enable_mcl", false);
     const lib_options_module = lib_options.createModule();
 
-    // Create zevm modules directly from source
-    const zevm_path = "../zevm/src";
-
-    const primitives = b.addModule("primitives", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/primitives/main.zig" } },
+    // Get zevm dependency and import its modules
+    const zevm_dep = b.dependency("zevm", .{
         .target = target,
         .optimize = optimize,
     });
 
-    const bytecode = b.addModule("bytecode", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/bytecode/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    bytecode.addImport("primitives", primitives);
+    // Import zevm modules from the dependency
+    const primitives = zevm_dep.module("primitives");
+    const bytecode = zevm_dep.module("bytecode");
+    const state = zevm_dep.module("state");
+    const database = zevm_dep.module("database");
+    const context = zevm_dep.module("context");
+    const interpreter = zevm_dep.module("interpreter");
+    const precompile = zevm_dep.module("precompile");
+    const handler = zevm_dep.module("handler");
+    const inspector = zevm_dep.module("inspector");
 
-    const state = b.addModule("state", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/state/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    state.addImport("primitives", primitives);
-    state.addImport("bytecode", bytecode);
-
-    const database = b.addModule("database", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/database/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    database.addImport("primitives", primitives);
-    database.addImport("state", state);
-    database.addImport("bytecode", bytecode);
-
-    const context = b.addModule("context", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/context/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    context.addImport("primitives", primitives);
-    context.addImport("state", state);
-    context.addImport("database", database);
-
-    const interpreter = b.addModule("interpreter", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/interpreter/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    interpreter.addImport("primitives", primitives);
-    interpreter.addImport("bytecode", bytecode);
-    interpreter.addImport("context", context);
-
-    const precompile = b.addModule("precompile", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/precompile/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
+    // Add build options to precompile module
     precompile.addImport("build_options", lib_options_module);
-    precompile.addImport("primitives", primitives);
-
-    const handler = b.addModule("handler", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/handler/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    handler.addImport("primitives", primitives);
-    handler.addImport("bytecode", bytecode);
-    handler.addImport("state", state);
-    handler.addImport("database", database);
-    handler.addImport("interpreter", interpreter);
-    handler.addImport("context", context);
-    handler.addImport("precompile", precompile);
-
-    const inspector = b.addModule("inspector", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = zevm_path ++ "/inspector/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    inspector.addImport("primitives", primitives);
-    inspector.addImport("interpreter", interpreter);
 
     // Create Zisk zkVM support module
     const zisk_mod = b.addModule("zisk", .{
