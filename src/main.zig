@@ -144,22 +144,19 @@ fn executeValueTransfer(
 }
 
 // Entry point for linker (_start symbol)
-// This MUST be pure assembly - no function prologue allowed
-// Using inline assembly as naked function
+// Pure assembly entry - NO function prologue allowed
+// Must use comptime asm to avoid Zig generating function prologue
 comptime {
     asm (
         \\.section .text._start,"ax",%progbits
         \\.global _start
         \\.type _start, @function
         \\_start:
-        \\  // Initialize sp and gp
-        \\  li sp, 0xa0120000
-        \\  li gp, 0xa0020000
-        \\  // Call _start_main
-        \\  call _start_main
-        \\  // Should never return
+        \\  li sp, 0xa0120000    // Initialize stack pointer
+        \\  li gp, 0xa0020000    // Initialize global pointer
+        \\  call _start_main     // Jump to Zig code
         \\  .align 4
-        \\1: wfi
+        \\1: wfi                  // Should never reach here
         \\  j 1b
         \\.size _start, . - _start
     );

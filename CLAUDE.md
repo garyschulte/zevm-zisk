@@ -10,7 +10,7 @@ This is a Zig-based state transition function (guest program) for **Zisk zkVM**,
 
 ### Memory Layout (from zisk/core/src/mem.rs)
 
-```
+``` 
 ROM (rx):   0x80000000 - 0x87FFFFFF  [128MB]
             └─ 0x87F00000+: Float library (RESERVED - don't use)
 
@@ -96,17 +96,27 @@ SECTIONS {
 ## Entry Point Pattern
 
 ```zig
-// Pure assembly entry - NO function prologue
-export fn _start() linksection(".text._start") noreturn {
-    asm volatile (
-        \\ li sp, 0xa0120000    // Initialize stack
-        \\ li gp, 0xa0020000    // Initialize global pointer
-        \\ call _start_main
-        // ... exit handling ...
+// Entry point for linker (_start symbol)
+// Pure assembly entry - NO function prologue allowed
+// MUST use comptime asm to avoid Zig generating function prologue
+// Using export fn with linksection() causes sign-extension errors!
+comptime {
+    asm (
+        \\.section .text._start,"ax",%progbits
+        \\.global _start
+        \\.type _start, @function
+        \\_start:
+        \\  li sp, 0xa0120000    // Initialize stack pointer
+        \\  li gp, 0xa0020000    // Initialize global pointer
+        \\  call _start_main     // Jump to Zig code
+        \\  .align 4
+        \\1: wfi                  // Should never reach here
+        \\  j 1b
+        \\.size _start, . - _start
     );
-    unreachable;
 }
 
+// Main initialization after sp/gp are set
 // Regular Zig code with stack available
 export fn _start_main() noreturn {
     uartWrite("INIT\n");
