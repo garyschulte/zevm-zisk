@@ -2,61 +2,38 @@
 
 ## Overview
 
-ZEVM now supports bare-metal RISC-V targets with complete Zisk zkVM integration, enabling Ethereum block execution in zero-knowledge proof environments. This implementation provides a fully functional EVM running on rv64im (RISC-V 64-bit with integer multiply) with no OS, atomics, or floating-point operations.
+zevm-zisk is a state-transition-function guest program for Zisk zkVM using upstream [zevm](https://github.com/10d9e/zevm.git).
 
 ## Quick Start - Zisk zkVM
 
 ### Build and Run
 
 ```bash
+# download and build zevm:
+`bash ./build-zisk.sh`
+
 # Build for Zisk zkVM using dedicated build file
-zig build --build-file build.zisk.zig
+`zig build` 
 
 # Or with optimization options
-zig build --build-file build.zisk.zig -Doptimize=ReleaseSmall
+zig build -Doptimize=ReleaseSmall
 
 # Run in Zisk emulator
-../hello_zisk/zisk/target/release/ziskemu -e zig-out/bin/block_transition_zisk
+./zisk/target/release/ziskemu -e zig-out/bin/zevm-zisk
 ```
 
-**Note**: The `build.zisk.zig` file is a dedicated build configuration specifically for Zisk zkVM. It automatically:
+**WIP**: zevm-zisk is a proof-of-concept state transition function specifically for zisk zkevm, it: 
 - Targets `riscv64-freestanding`
 - Disables crypto libraries (blst, mcl) that aren't available in freestanding environments
 - Uses the custom linker script (`zisk.ld`)
 - Sets the medium code model for full 64-bit addressing
+- Uses mock storage, mock blocks
 
-For reference, the old manual approach (not recommended):
-```bash
-# Old approach - now replaced by build.zisk.zig
-zig build -Dtarget=riscv64-freestanding \
-          -Dcpu=baseline_rv64-a-c-d-f-zicsr-zaamo-zalrsc \
-          -Doptimize=ReleaseSmall \
-          -Dblst=false \
-          -Dmcl=false
-```
+TODO:
+- precompile ecall implementations
+- block and witness input state implementation
+- block processing
 
-### Expected Output
-
-```
-INIT
-=== Zisk zkVM Block State Transition Demo ===
-Creating in-memory database...
-Setting up initial account state...
-Computing initial state root...
-Initial state root: b6f5ed83d9edc9038e5c01ce2023b8e50d7f6d2426cd943166fc7e181e8d097c
-Block number: 12345
-Block timestamp: 1700000000
-
-Executing transaction: Alice -> Bob (50 ETH)...
-Alice final balance: 950 ETH (nonce: 1)
-Bob final balance: 150 ETH (nonce: 0)
-
-Computing final state root...
-Final state root: 43cc4236fa7dbe412b074f7e37c0f2efe0256353a7b63182e3536e7230527a1e
-
-=== Block transition completed successfully ===
-DONE
-```
 
 ## Architecture
 
@@ -70,29 +47,45 @@ DONE
 
 ### Memory Layout (Zisk zkVM)
 
-The Zisk zkVM requires a specific memory layout defined in `zisk.ld`:
+The Zisk zkVM uses a specific memory layout defined in `zisk.ld`. Understanding this layout is critical for implementing guest programs:
 
 ```
-ROM (0x80000000 - 0x90000000):  [256MB]
+ROM (Code/Read-Only): 0x80000000 - 0x87FFFFFF [128MB]
+├── 0x80000000    Program ROM start (your code here)
 ├── .text         Code section
-└── .rodata       Read-only data
+├── .rodata       Read-only data
+└── 0x87F00000    Float library ROM (last 1MB, reserved)
 
-Reserved (0xa0000000 - 0xa0020000): [128KB]
-└── Zisk internal use
+INPUT (Read-Only): 0x90000000 - 0x98000000 [128MB max]
+└── Program input data (written during initialization)
 
-RAM (0xa0020000 - 0xc0000000): [~512MB]
-├── .data         Initialized data
-├── .bss          Uninitialized data
-├── .heap         2MB NOLOAD section
-└── Stack         @ 0xa0120000 (RAM + 1MB)
+SYSTEM (R/W): 0xa0000000 - 0xa0010000 [64KB]
+├── 0xa0000000    Register file (32 registers × 8 bytes = 256 bytes)
+├── 0xa0000200    UART_ADDR (stdout, write single bytes)
+├── 0xa0001000    Float registers (FREG_FIRST)
+└── 0xa0008000    CSR registers (CSR_ADDR)
 
-UART (0xa0000200): Console output
+OUTPUT (R/W): 0xa0010000 - 0xa0020000 [64KB]
+└── Public output data (ziskos::set_output)
+
+RAM (R/W): 0xa0020000 - 0xc0000000 [~512MB]
+├── .data         Initialized writable data (VMA=LMA in RAM)
+├── .bss          Zero-initialized data
+├── Stack         1MB (grows down from _init_stack_top)
+└── Heap          Dynamic allocation via sys_alloc_aligned
+                  From: _kernel_heap_bottom (after stack)
+                  To:   0xc0000000 (~511MB available)
+
+FLOAT LIB RAM: 0xafff0000 - 0xc0000000 [64KB]
+└── Float library runtime memory (reserved)
 ```
 
 **Critical Requirements:**
-- Code MUST be in ROM at 0x80000000 (not RAM)
-- Writable data MUST be in RAM starting at 0xa0020000
-- Stack pointer must be initialized before any function calls
+- Code MUST be in ROM (0x80000000-0x87EFFFFF)
+- Float library region (0x87F00000+) is reserved - don't use
+- Writable data uses `>RAM AT>RAM` (VMA=LMA, no copying needed)
+- Heap grows upward via `sys_alloc_aligned` (bump allocator)
+- All addresses are 64-bit, but ROM is in positive 32-bit range
 
 ### Entry Point Pattern
 
@@ -127,87 +120,175 @@ export fn _start_main() noreturn {
 - The prologue runs BEFORE inline assembly in the function body
 - Therefore, sp/gp must be initialized in pure assembly first
 
+### Linker Script Details (`zisk.ld`)
+
+**Key Insight: zkVM vs Bare-Metal**
+
+Traditional embedded systems use `>RAM AT>ROM` for `.data` sections:
+```ld
+.data : {
+    *(.data .data.*)
+} >RAM AT>ROM  /* VMA in RAM, LMA in ROM - requires copying */
+```
+
+This requires startup code to copy data from ROM to RAM. **Zisk doesn't work this way!**
+
+Zisk zkVM uses `>RAM AT>RAM` for writable data:
+```ld
+.data : {
+    *(.data .data.*)
+} >RAM AT>RAM  /* VMA = LMA, both in RAM */
+```
+
+**Why?**
+- The zkVM emulator/prover loads your ELF and **initializes memory directly**
+- No copying needed - memory is already set up when your program starts
+- This is standard for virtual machines (like running on an OS)
+
+**Memory Regions in zisk.ld:**
+```ld
+MEMORY {
+    ROM (rx)  : ORIGIN = 0x80000000, LENGTH = 0x08000000  /* 128MB */
+    RAM (rw)  : ORIGIN = 0xa0020000, LENGTH = 0x1FFE0000  /* ~512MB */
+}
+
+SECTIONS {
+    .text : { ... } >ROM :text
+    .rodata : { ... } >ROM :text
+
+    /* IMPORTANT: Both VMA and LMA in RAM */
+    .data : { ... } >RAM AT>RAM :data
+    .bss : { ... } >RAM AT>RAM :bss
+
+    /* Heap grows from here */
+    PROVIDE(_kernel_heap_bottom = _init_stack_top);
+    PROVIDE(_kernel_heap_top = ORIGIN(RAM) + LENGTH(RAM));
+}
+```
+
 ## Implementation Components
 
-### 1. Bare-Metal Allocators (`src/baremetal/allocator.zig`)
+### 1. Zisk zkVM Allocators (`src/zisk/allocator.zig`)
 
-#### BumpAllocator
-Simple sequential allocator for bare-metal environments:
+#### ZiskAllocator (Recommended)
+Dynamic allocator using Zisk's `sys_alloc_aligned` runtime function:
 
 ```zig
-var buffer: [2 * 1024 * 1024]u8 = undefined;
-var bump = baremetal.BumpAllocator.init(&buffer);
-const allocator = bump.allocator();
+const zisk = @import("zisk");
+
+// Initialize - uses Zisk's kernel heap (~511MB available)
+var zisk_alloc = zisk.ZiskAllocator.init();
+const allocator = zisk_alloc.allocator();
 
 // Use like any Zig allocator
 const db = database.InMemoryDB.init(allocator);
+```
 
-// Check memory usage
+**How it works:**
+- Calls `sys_alloc_aligned(bytes, alignment)` for each allocation
+- Bump allocator: allocates from `_kernel_heap_bottom` upward
+- No free/realloc support (zkVM constraint)
+- Backed by ~511MB of RAM (after 1MB stack)
+
+**Implementation:**
+```zig
+export fn sys_alloc_aligned(bytes: usize, alignment: usize) [*]u8 {
+    // Static heap position tracker
+    if (heap_pos == 0) {
+        heap_pos = @intFromPtr(&_kernel_heap_bottom);
+    }
+
+    // Align and allocate
+    heap_pos = alignForward(heap_pos, alignment);
+    const ptr = heap_pos;
+    heap_pos += bytes;
+    return @ptrFromInt(ptr);
+}
+```
+
+#### BumpAllocator (For Fixed Buffers)
+Sequential allocator when you want to manage your own buffer:
+
+```zig
+var buffer: [1024 * 1024]u8 = undefined;  // 1MB buffer
+var bump = zisk.BumpAllocator.init(&buffer);
+const allocator = bump.allocator();
+
+// Check usage
 const stats = bump.getStats();
 // stats.used, stats.total, stats.free
 
-// Reset all allocations
+// Reset for reuse
 bump.reset();
 ```
 
 #### ArenaAllocator
-Reset-able bump allocator for per-block allocation patterns:
+Reset-able bump allocator for per-block patterns:
 
 ```zig
-var arena = baremetal.ArenaAllocator.init(&buffer);
-defer arena.reset(); // Reset after each block
+var buffer: [1024 * 1024]u8 = undefined;
+var arena = zisk.ArenaAllocator.init(&buffer);
+defer arena.reset();  // Clear after each iteration
 
 const allocator = arena.allocator();
 // ... process block ...
 ```
 
-#### FixedBufferAllocator
-Compile-time sized allocator:
+### 2. Zisk Syscalls/Precompiles
 
-```zig
-var fba = baremetal.FixedBufferAllocator(2 * 1024 * 1024).init();
-const allocator = fba.allocator();
+Zisk implements precompiles as **CSR instructions** (not traditional ecalls). The syscall range is `0x800-0x84F` (80 syscalls):
+
+```
+Available Precompiles (via csrs instruction):
+├── 0x800  SYSCALL_KECCAKF_ID        Keccak-f[1600] permutation
+├── 0x801  SYSCALL_ARITH256_ID       256-bit multiply-add
+├── 0x802  SYSCALL_ARITH256_MOD_ID   256-bit modular multiply-add
+├── 0x803  SYSCALL_SECP256K1_ADD_ID  Secp256k1 point addition
+├── 0x804  SYSCALL_SECP256K1_DBL_ID  Secp256k1 point doubling
+├── 0x805  SYSCALL_SHA256F_ID        SHA-256 compress function
+├── 0x806  SYSCALL_BN254_CURVE_ADD_ID    BN254 point addition
+├── 0x807  SYSCALL_BN254_CURVE_DBL_ID    BN254 point doubling
+├── 0x808  SYSCALL_BN254_COMPLEX_ADD_ID  BN254 Fp2 addition
+├── 0x80B  SYSCALL_ARITH384_MOD_ID   384-bit modular multiply-add
+├── 0x80C  SYSCALL_BLS12_381_CURVE_ADD_ID    BLS12-381 G1 add
+├── 0x80D  SYSCALL_BLS12_381_CURVE_DBL_ID    BLS12-381 G1 double
+└── 0x811  SYSCALL_ADD256_ID         256-bit addition with carry
 ```
 
-### 2. Crypto Ecall Stubs (`src/baremetal/ecalls.zig`)
-
-Syscall interface for crypto operations (currently stubbed, returns errors):
+**Zig Implementation Pattern:**
 
 ```zig
-pub const SyscallNum = enum(u32) {
-    keccak256 = 0x1000,
-    sha256 = 0x1001,
-    ecrecover = 0x1002,
-    bn256_add = 0x1003,
-    bn256_mul = 0x1004,
-    bn256_pairing = 0x1005,
-    modexp = 0x1007,
-    bls12_g1_add = 0x1010,
-    bls12_g1_mul = 0x1011,
-    bls12_g2_add = 0x1013,
-    bls12_pairing = 0x1016,
-    kzg_point_evaluation = 0x1020,
-    p256_verify = 0x1030,
-};
-```
-
-**Integration Pattern** (for future zkVM syscalls):
-
-```zig
-fn ecallStub(syscall_num: u32, input_ptr: [*]const u8, ...) callconv(.C) Result {
-    var status: u32 = undefined;
-    var gas_used: u64 = undefined;
-
-    asm volatile ("ecall"
-        : [status] "={x10}" (status),
-          [gas_used] "={x11}" (gas_used)
-        : [syscall] "{x17}" (syscall_num),
-          [input_ptr] "{x10}" (input_ptr),
-          // ... other parameters ...
+// Hypothetical Zisk precompile wrapper
+fn ziskKeccakF(state: *[25]u64) void {
+    asm volatile (
+        \\ csrs 0x800, %[state]
+        :
+        : [state] "r" (state)
         : "memory"
     );
+}
+```
 
-    return .{ .status = status, .gas_used = gas_used };
+**Key Differences from Traditional Ecalls:**
+- Uses `csrs` (CSR set) instead of `ecall` instruction
+- CSR address encodes the precompile ID (0x800-0x84F)
+- Parameters passed via registers or memory pointers
+- When transpiled to Zisk, these become optimized precompile operations
+
+**Exit Syscall (Traditional Ecall):**
+
+```zig
+fn zkExit(exit_code: u32) noreturn {
+    asm volatile (
+        \\ ecall
+        :
+        : [exit_code] "{a0}" (exit_code),
+          [syscall] "{a7}" (93)  // Linux exit syscall number
+        : "memory"
+    );
+    while (true) {
+        asm volatile ("wfi");
+    }
 }
 ```
 
@@ -351,25 +432,28 @@ fn executeValueTransfer(
 ### Size and Sections
 
 ```bash
-$ ls -lh zig-out/bin/block_transition_zisk
--rwxr-xr-x  25K  block_transition_zisk
+$ ls -lh zig-out/bin/zevm-zisk
+-rwxr-xr-x  3.0M  zevm-zisk
 
-$ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk
-   text	   data	    bss	    dec	    hex	filename
-  16396	      0	2097152	2113548	 20400c	block_transition_zisk
+$ riscv64-unknown-elf-size zig-out/bin/zevm-zisk
+   text    data     bss     dec     hex filename
+ 123456      128    4096  127680   1f2a0 zevm-zisk  (example values)
 ```
 
-- **File size**: 25KB (efficient!)
-- **Code (.text)**: ~16KB
-- **Heap (.bss)**: 2MB (NOLOAD, not in file)
-- **Data**: Minimal
+**Size breakdown:**
+- **File size**: ~3MB (includes full EVM interpreter + state management)
+- **Code (.text)**: Majority of size (EVM opcodes, crypto, etc.)
+- **Data (.data)**: Minimal initialized data
+- **BSS (.bss)**: Zero-initialized data
+- **No static heap**: Uses dynamic allocation from kernel heap
 
 ### Optimization Notes
 
 - `ReleaseSmall` optimization balances size and performance
-- NOLOAD sections prevent heap from bloating binary
-- Disabled crypto libraries (blst, mcl) for minimal dependencies
-- Pure Zig stdlib Keccak256 (no external deps)
+- No NOLOAD sections needed - heap is dynamically allocated
+- Disabled crypto libraries (blst, mcl) for freestanding compatibility
+- Pure Zig stdlib Keccak256 implementation
+- ~511MB heap available via `sys_alloc_aligned`
 
 ## Build System Integration
 
@@ -468,9 +552,9 @@ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk         # Size breakd
 
 **Symptom**: `Address out of range: 18446744071025197048` (0xFFFFFFFF...)
 
-**Cause**: Code placed in RAM causes 32-bit addresses to be sign-extended to 64-bit
+**Cause**: Code placed in RAM (0xa0000000+) causes 32-bit addresses to be sign-extended to 64-bit negative values
 
-**Solution**: Place code in ROM at 0x80000000 (linker script requirement)
+**Solution**: Place code in ROM at 0x80000000 (positive 32-bit range)
 
 ### Issue: Incomplete 32-bit Instruction
 
@@ -478,7 +562,7 @@ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk         # Size breakd
 
 **Cause**: Unaligned code after ecall instruction
 
-**Solution**: Add `.align 4` directive after ecall
+**Solution**: Add `.align 4` directive after ecall in assembly
 
 ### Issue: Stack Initialization
 
@@ -486,7 +570,25 @@ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk         # Size breakd
 
 **Cause**: Function prologue runs before sp initialization
 
-**Solution**: Use the two-function entry pattern (_start + _start_main)
+**Solution**: Use two-function entry pattern (_start pure assembly + _start_main with stack)
+
+### Issue: Incorrect Alignment Panic
+
+**Symptom**: `PANIC: incorrect alignment` immediately on start
+
+**Cause**: Code references a `.heap` section that's not defined in linker script
+
+**Solution**: Either:
+1. Use `ZiskAllocator` (dynamic heap via `sys_alloc_aligned`) - **Recommended**
+2. Or add `.heap (NOLOAD)` section to linker script for static buffers
+
+### Issue: Undefined Symbol `sys_alloc_aligned`
+
+**Symptom**: `ld.lld: undefined symbol: sys_alloc_aligned`
+
+**Cause**: Rust's ziskos runtime provides this, but we're writing in Zig
+
+**Solution**: Implement it yourself (see `src/zisk/allocator.zig:8-30`)
 
 
 ## Performance Characteristics
@@ -495,10 +597,10 @@ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk         # Size breakd
 
 | Component | Size | Notes |
 |-----------|------|-------|
-| Core EVM | ~100KB | Without crypto |
+| Core EVM | ~1-2MB | With full interpreter |
 | Database | Variable | Depends on state size |
-| Stack | ~8KB | 1024 stack items × 32 bytes |
-| Heap (configured) | 2MB | Adjustable via HEAP size |
+| Stack | 1MB | Linker-configured via _init_stack_top |
+| Heap | ~511MB | Dynamic, from _kernel_heap_bottom |
 
 ### Computational Complexity
 
@@ -510,10 +612,14 @@ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk         # Size breakd
 
 ### Optimization Opportunities
 
-1. **Custom Keccak**: Implement as zkVM syscall for better performance
-2. **Heap Size**: Tune based on actual workload
-3. **Stack Size**: Reduce if not using deep recursion
-4. **Code Size**: Further optimization with `-OReleaseFast` if space allows
+1. **Use Zisk Precompiles**: Replace Zig crypto with CSR-based precompiles
+   - Keccak-f (0x800) instead of software implementation
+   - SHA256 (0x805) for faster hashing
+   - BN254/BLS12-381 operations for signature verification
+
+2. **Tune Stack Size**: 1MB may be excessive for most programs
+3. **Memory Pooling**: Reuse allocations with ArenaAllocator reset patterns
+4. **Code Size**: Further optimize with `-OReleaseFast` vs `-OReleaseSmall`
 
 ## Future Enhancements
 
@@ -549,15 +655,21 @@ riscv64-unknown-elf-size zig-out/bin/block_transition_zisk         # Size breakd
 - ✅ `src/state/` - Account info
 - ✅ `src/database/` - In-memory DB
 - ✅ `src/context/` - Block context
-- ✅ `src/interpreter/` - EVM interpreter (not used in demo yet)
+- ✅ `src/interpreter/` - EVM interpreter
+- ✅ `src/precompile/` - Precompile implementations
+- ✅ `src/handler/` - Execution handler
 
-### Bare-Metal Modules
+### Zisk zkVM Support Module
 
-- ✅ `src/baremetal/allocator.zig` - Memory allocators
-- ✅ `src/baremetal/ecalls.zig` - Syscall stubs
-- ✅ `src/baremetal/main.zig` - Module exports
+- ✅ `src/zisk/allocator.zig` - ZiskAllocator, BumpAllocator, ArenaAllocator
+- ✅ `src/zisk/ecalls.zig` - Placeholder ecall stubs (for compatibility)
+- ✅ `src/zisk/main.zig` - Module exports
 
-### Examples
+### Main Program
 
-- ✅ `examples/block_transition.zig` - Native demo
-- ✅ `examples/block_transition_zisk.zig` - Zisk zkVM demo
+- ✅ `src/main.zig` - Zisk zkVM state transition demo
+
+### Build Configuration
+
+- ✅ `build.zig` - Zig build system configuration
+- ✅ `zisk.ld` - Custom linker script for Zisk zkVM memory layout

@@ -1,5 +1,98 @@
 const std = @import("std");
 
+// Linker-provided symbol for heap start
+extern const _kernel_heap_bottom: u8;
+
+/// Implementation of sys_alloc_aligned for Zisk zkVM
+/// This is a simple bump allocator that allocates from the kernel heap
+export fn sys_alloc_aligned(bytes: usize, alignment: usize) [*]u8 {
+    // Static variable to track current heap position
+    const State = struct {
+        var heap_pos: usize = 0;
+    };
+
+    // Initialize heap position on first call
+    if (State.heap_pos == 0) {
+        State.heap_pos = @intFromPtr(&_kernel_heap_bottom);
+    }
+
+    // Align the current position
+    const offset = State.heap_pos & (alignment - 1);
+    if (offset != 0) {
+        State.heap_pos += alignment - offset;
+    }
+
+    // Allocate the memory
+    const ptr: [*]u8 = @ptrFromInt(State.heap_pos);
+    State.heap_pos += bytes;
+
+    return ptr;
+}
+
+/// Zisk-based allocator that uses sys_alloc_aligned
+/// This is a pure bump allocator (no free/realloc support)
+pub const ZiskAllocator = struct {
+    const Self = @This();
+
+    /// Initialize the Zisk allocator (no-op, uses global heap)
+    pub fn init() Self {
+        return Self{};
+    }
+
+    /// Allocate memory with specified size and alignment
+    fn alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        _ = ctx;
+        _ = ret_addr;
+        const alignment = @as(usize, 1) << @intFromEnum(ptr_align);
+
+        // Call our sys_alloc_aligned implementation
+        const ptr = sys_alloc_aligned(len, alignment);
+        return ptr;
+    }
+
+    /// Resize an allocation (not supported, returns false)
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        _ = ctx;
+        _ = buf;
+        _ = buf_align;
+        _ = new_len;
+        _ = ret_addr;
+        return false;
+    }
+
+    /// Free memory (no-op, bump allocator doesn't support free)
+    fn free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
+        _ = ctx;
+        _ = buf;
+        _ = buf_align;
+        _ = ret_addr;
+        // No-op: Zisk allocator is a bump allocator
+    }
+
+    /// Remap an allocation (not supported, returns null)
+    fn remap(ctx: *anyopaque, old_buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        _ = ctx;
+        _ = old_buf;
+        _ = buf_align;
+        _ = new_len;
+        _ = ret_addr;
+        return null;
+    }
+
+    /// Get the Zig allocator interface
+    pub fn allocator(self: *Self) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .free = free,
+                .remap = remap,
+            },
+        };
+    }
+};
+
 /// Simple bump allocator for bare-metal environments
 /// This allocator provides a basic memory allocation strategy where memory
 /// is allocated sequentially from a fixed buffer without any deallocation support.

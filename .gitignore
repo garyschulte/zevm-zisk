@@ -6,9 +6,13 @@ zig-cache/
 # IDE
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
 *~
+
+# zisk build tree
+zisk/
 
 # OS
 .DS_Store

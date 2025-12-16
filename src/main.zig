@@ -1,13 +1,10 @@
 const std = @import("std");
-const baremetal = @import("baremetal");
+const zisk = @import("zisk");
 
 // Import individual modules instead of zevm library to avoid crypto dependencies
 const primitives = @import("primitives");
 const state = @import("state");
 const database = @import("database");
-
-/// Zisk zkVM memory buffer (2MB) - placed at fixed address to avoid sign-extension issues
-var HEAP: [2 * 1024 * 1024]u8 linksection(".heap") = undefined;
 
 /// Zisk zkVM UART address for console output
 const ZISK_UART: *volatile u8 = @ptrFromInt(0xa0000200);
@@ -28,6 +25,20 @@ fn uartPrint(comptime fmt: []const u8, args: anytype) void {
     var buffer: [256]u8 = undefined;
     const message = std.fmt.bufPrint(&buffer, fmt, args) catch "ERROR: Format failed\n";
     uartWrite(message);
+}
+
+/// Print a hash as hex string
+fn uartPrintHash(prefix: []const u8, hash: primitives.Hash) void {
+    uartWrite(prefix);
+    for (hash) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch {
+            uartWrite("??");
+            continue;
+        };
+        uartWrite(&buf);
+    }
+    uartWrite("\n");
 }
 
 /// Exit via zisk zkVM syscall
@@ -132,26 +143,26 @@ fn executeValueTransfer(
     try db.insertAccount(to, receiver_account);
 }
 
-/// Entry point for linker (_start symbol)
-/// This MUST be pure assembly - no function prologue allowed
-export fn _start() linksection(".text._start") noreturn {
-    asm volatile (
-        \\ // Initialize sp and gp
-        \\ li sp, 0xa0120000
-        \\ li gp, 0xa0020000
-        \\
-        \\ // Call _start_main
-        \\ call _start_main
-        \\
-        \\ // Should never return
-        \\ .align 4
-        \\ 1: wfi
-        \\ j 1b
-        :
-        :
-        : .{ .x2 = true, .x3 = true, .memory = true }
+// Entry point for linker (_start symbol)
+// This MUST be pure assembly - no function prologue allowed
+// Using inline assembly as naked function
+comptime {
+    asm (
+        \\.section .text._start,"ax",%progbits
+        \\.global _start
+        \\.type _start, @function
+        \\_start:
+        \\  // Initialize sp and gp
+        \\  li sp, 0xa0120000
+        \\  li gp, 0xa0020000
+        \\  // Call _start_main
+        \\  call _start_main
+        \\  // Should never return
+        \\  .align 4
+        \\1: wfi
+        \\  j 1b
+        \\.size _start, . - _start
     );
-    unreachable;
 }
 
 /// Main initialization after sp/gp are set
@@ -174,9 +185,9 @@ export fn _start_main() noreturn {
 pub fn main() !void {
     uartWrite("=== Zisk zkVM Block State Transition Demo ===\n");
 
-    // Use the 2MB heap for allocations
-    var bump_alloc = baremetal.BumpAllocator.init(&HEAP);
-    const allocator = bump_alloc.allocator();
+    // Use Zisk's sys_alloc_aligned for dynamic allocations
+    var zisk_alloc = zisk.ZiskAllocator.init();
+    const allocator = zisk_alloc.allocator();
 
     uartWrite("Creating in-memory database...\n");
     var db = database.InMemoryDB.init(allocator);
@@ -202,7 +213,7 @@ pub fn main() !void {
     // Compute initial state root
     uartWrite("Computing initial state root...\n");
     const initial_state_root = try computeSimpleStateRoot(&db);
-    uartPrint("Initial state root: {x:0>64}\n", .{initial_state_root});
+    uartPrintHash("Initial state root: ", initial_state_root);
 
     // Create a mock block
     const block = MockBlock.init(12345, 1700000000, beneficiary);
@@ -223,7 +234,7 @@ pub fn main() !void {
     // Compute final state root
     uartWrite("\nComputing final state root...\n");
     const final_state_root = try computeSimpleStateRoot(&db);
-    uartPrint("Final state root: {x:0>64}\n", .{final_state_root});
+    uartPrintHash("Final state root: ", final_state_root);
 
     // Check if state changed
     if (std.mem.eql(u8, &initial_state_root, &final_state_root)) {

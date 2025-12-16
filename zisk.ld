@@ -1,7 +1,10 @@
 /* Linker script for Zisk zkVM
- * ROM: 0x80000000 - 0x90000000 (256MB) - code and read-only data
- * RAM: 0xa0020000 - 0xc0000000 (512MB-128KB) - writable data
- * Note: 0xa0000000-0xa0020000 is reserved by Zisk
+ * ROM: 0x80000000 - 0x87FFFFFF (128MB) - code and read-only data
+ *      Note: 0x87F00000-0x87FFFFFF (last 1MB) reserved for float library
+ * RAM: 0xa0020000 - 0xc0000000 (~512MB) - writable data
+ *      Note: 0xa0000000-0xa0010000 is system memory (registers, UART, CSRs)
+ *      Note: 0xa0010000-0xa0020000 is OUTPUT_ADDR region
+ *      Note: 0xa0030000+ is AVAILABLE_MEM_ADDR (general purpose)
  */
 
 OUTPUT_FORMAT("elf64-littleriscv")
@@ -10,7 +13,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x80000000, LENGTH = 0x10000000
+    ROM (rx)  : ORIGIN = 0x80000000, LENGTH = 0x08000000
     RAM (rw)  : ORIGIN = 0xa0020000, LENGTH = 0x1FFE0000
 }
 
@@ -37,33 +40,39 @@ SECTIONS
     } >ROM :text
 
     /* Writable data in RAM */
+    . = ALIGN(8);
     .data : {
         __data_start = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
+        . = ALIGN(8);
         __data_end = .;
-    } >RAM AT>ROM :data
+    } >RAM AT>RAM :data
 
     /* Set global pointer after data */
     . = ALIGN(8);
     PROVIDE(__global_pointer$ = .);
 
+    . = ALIGN(8);
     .bss : {
         __bss_start = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
         *(COMMON)
+        . = ALIGN(8);
         __bss_end = .;
     } >RAM AT>RAM :bss
 
-    /* Heap section for large buffers (not loaded from file) */
-    .heap (NOLOAD) : ALIGN(0x1000) {
-        __heap_start = .;
-        *(.heap)
-        . = ALIGN(0x1000);
-        __heap_end = .;
-    } >RAM
+    /* Stack (grows down from here) */
+    . = ALIGN(16);
+    PROVIDE(_init_stack_top = . + 0x100000);  /* 1MB stack */
 
+    /* Heap (after stack) */
+    PROVIDE(_kernel_heap_bottom = _init_stack_top);
+    PROVIDE(_kernel_heap_top = ORIGIN(RAM) + LENGTH(RAM));
+    PROVIDE(_kernel_heap_size = _kernel_heap_top - _kernel_heap_bottom);
+
+    . = ALIGN(8);
     _end = .;
 
     /* Discard unnecessary sections */

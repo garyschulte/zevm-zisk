@@ -1,14 +1,16 @@
-/// Bare-metal support for ZEVM on RISC-V
+/// Zisk zkVM support module
 ///
-/// This module provides:
-/// - Custom memory allocators for bare-metal environments
-/// - Ecall stubs for cryptographic operations
-/// - RV64IM target support (no atomics, no floating point)
+/// This module provides runtime support for programs running on the Zisk zkVM:
+/// - ZiskAllocator: Memory allocation using Zisk's sys_alloc_aligned
+/// - BumpAllocator: Simple bump allocator for fixed buffers
+/// - ArenaAllocator: Resettable bump allocator
+/// - Ecall stubs: Placeholder ecalls for compatibility (not used by Zisk)
 
 pub const allocator = @import("allocator.zig");
 pub const ecalls = @import("ecalls.zig");
 
 // Re-export commonly used types
+pub const ZiskAllocator = allocator.ZiskAllocator;
 pub const BumpAllocator = allocator.BumpAllocator;
 pub const ArenaAllocator = allocator.ArenaAllocator;
 pub const FixedBufferAllocator = allocator.FixedBufferAllocator;
