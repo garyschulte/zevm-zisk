@@ -4,37 +4,42 @@
 /// - ZiskAllocator: Memory allocation using Zisk's sys_alloc_aligned
 /// - BumpAllocator: Simple bump allocator for fixed buffers
 /// - ArenaAllocator: Resettable bump allocator
-/// - Ecall stubs: Placeholder ecalls for compatibility (not used by Zisk)
+/// - Hardware-accelerated circuits via CSR instructions
 
 pub const allocator = @import("allocator.zig");
-pub const ecalls = @import("ecalls.zig");
+pub const circuits = @import("zisk_circuits.zig");
 
-// Re-export commonly used types
+// Re-export commonly used allocator types
 pub const ZiskAllocator = allocator.ZiskAllocator;
 pub const BumpAllocator = allocator.BumpAllocator;
 pub const ArenaAllocator = allocator.ArenaAllocator;
 pub const FixedBufferAllocator = allocator.FixedBufferAllocator;
 
-pub const SyscallNum = ecalls.SyscallNum;
-pub const EcallResult = ecalls.EcallResult;
+// Re-export circuit CSR addresses
+pub const CircuitCSR = circuits.CircuitCSR;
 
-// Re-export ecall functions
-pub const keccak256Ecall = ecalls.keccak256Ecall;
-pub const sha256Ecall = ecalls.sha256Ecall;
-pub const ecrecoverEcall = ecalls.ecrecoverEcall;
-pub const bn256AddEcall = ecalls.bn256AddEcall;
-pub const bn256MulEcall = ecalls.bn256MulEcall;
-pub const bn256PairingEcall = ecalls.bn256PairingEcall;
-pub const blake2fEcall = ecalls.blake2fEcall;
-pub const modexpEcall = ecalls.modexpEcall;
-pub const bls12G1AddEcall = ecalls.bls12G1AddEcall;
-pub const bls12G1MulEcall = ecalls.bls12G1MulEcall;
-pub const bls12G1MsmEcall = ecalls.bls12G1MsmEcall;
-pub const bls12G2AddEcall = ecalls.bls12G2AddEcall;
-pub const bls12G2MulEcall = ecalls.bls12G2MulEcall;
-pub const bls12G2MsmEcall = ecalls.bls12G2MsmEcall;
-pub const bls12PairingEcall = ecalls.bls12PairingEcall;
-pub const bls12MapFpToG1Ecall = ecalls.bls12MapFpToG1Ecall;
-pub const bls12MapFp2ToG2Ecall = ecalls.bls12MapFp2ToG2Ecall;
-pub const kzgPointEvaluationEcall = ecalls.kzgPointEvaluationEcall;
-pub const p256VerifyEcall = ecalls.p256VerifyEcall;
+// Re-export cryptographic circuit functions
+pub const keccakf = circuits.keccakf;
+pub const sha256Compress = circuits.sha256Compress;
+
+// Re-export elliptic curve circuit functions
+pub const secp256k1Add = circuits.secp256k1Add;
+pub const secp256k1Double = circuits.secp256k1Double;
+
+pub const bn254CurveAdd = circuits.bn254CurveAdd;
+pub const bn254CurveDouble = circuits.bn254CurveDouble;
+pub const bn254ComplexAdd = circuits.bn254ComplexAdd;
+pub const bn254ComplexSub = circuits.bn254ComplexSub;
+pub const bn254ComplexMul = circuits.bn254ComplexMul;
+
+pub const bls12_381CurveAdd = circuits.bls12_381CurveAdd;
+pub const bls12_381CurveDouble = circuits.bls12_381CurveDouble;
+pub const bls12_381ComplexAdd = circuits.bls12_381ComplexAdd;
+pub const bls12_381ComplexSub = circuits.bls12_381ComplexSub;
+pub const bls12_381ComplexMul = circuits.bls12_381ComplexMul;
+
+// Re-export arithmetic circuit functions
+pub const arith256 = circuits.arith256;
+pub const arith256Mod = circuits.arith256Mod;
+pub const arith384Mod = circuits.arith384Mod;
+pub const add256 = circuits.add256;
