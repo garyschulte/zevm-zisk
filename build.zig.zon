@@ -1,7 +1,7 @@
 .{
     .name = .zevm_zisk,
     .version = "0.1.0",
-    .minimum_zig_version = "0.13.0",
+    .minimum_zig_version = "0.15.1",
     .fingerprint = 0x7e87007e021290d,
 
     .dependencies = .{
