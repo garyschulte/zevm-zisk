@@ -121,55 +121,101 @@ fn executeValueTransfer(
     try db.insertAccount(to, receiver_account);
 }
 
-/// Test BN254 point doubling and addition circuits via CSR
+/// Test EIP-196 BN254 operations (ecAdd and ecMul)
 fn testBn254CurveAddCircuit() void {
-    // BN254 generator point G = (1, 2)
-    // Format: Each point is 64 bytes (x: 32 bytes as [u64; 4], y: 32 bytes as [u64; 4])
-    // Each u64 is stored in little-endian byte order
-    // The u64 array is in little-endian limb order (LSB first)
+    uartWrite("=== EIP-196 BN254 Operations ===\n");
 
-    // Test 1: Point doubling (G + G = 2G)
-    uartWrite("Test 1: Point doubling (2G)...\n");
-    var point: [64]u8 align(8) = [_]u8{0} ** 64;
-    point[0] = 1; // x = 1
-    point[32] = 2; // y = 2
+    // BN254 generator point G = (1, 2) in big-endian format (EIP-196 standard)
+    var g_point: [64]u8 = [_]u8{0} ** 64;
+    g_point[31] = 1; // x = 1 (big-endian)
+    g_point[63] = 2; // y = 2 (big-endian)
 
-    zisk.bn254CurveDouble(&point);
-    uartWrite("bn254CurveDouble completed!\n");
+    // Test 1: ecAdd with G + G (should use doubling internally)
+    uartWrite("\nTest 1: ecAdd(G, G) = 2G\n");
+    var result: [64]u8 = undefined;
+    zisk.eip196.ecAdd(&g_point, &g_point, &result);
 
-    // Print result (2G)
-    uartWrite("  2G.x first 16 bytes: ");
-    for (point[0..16]) |byte| {
-        var buf: [3]u8 = undefined;
-        _ = std.fmt.bufPrint(&buf, "{x:0>2} ", .{byte}) catch unreachable;
-        uartWrite(&buf);
-    }
-    uartWrite("\n");
-
-    // Test 2: Point addition (2G + G = 3G)
-    uartWrite("\nTest 2: Point addition (2G + G = 3G)...\n");
-    var points: [128]u8 align(8) = [_]u8{0} ** 128;
-
-    // First point: 2G (result from doubling)
-    @memcpy(points[0..64], &point);
-
-    // Second point: G = (1, 2)
-    points[64] = 1; // x = 1
-    points[96] = 2; // y = 2
-
-    zisk.bn254CurveAdd(&points);
-    uartWrite("bn254CurveAdd completed!\n");
-
-    // Print result (2G point) - first 64 bytes of points array
-    uartWrite("Result (2G):\n");
-    uartWrite("  x = 0x");
-    for (points[0..32]) |byte| {
+    uartWrite("  Result (2G):\n");
+    uartWrite("    x = 0x");
+    for (result[0..32]) |byte| {
         var buf: [2]u8 = undefined;
         _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
         uartWrite(&buf);
     }
-    uartWrite("\n  y = 0x");
-    for (points[32..64]) |byte| {
+    uartWrite("\n    y = 0x");
+    for (result[32..64]) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
+        uartWrite(&buf);
+    }
+    uartWrite("\n");
+
+    // Test 2: ecAdd with 2G + G = 3G
+    uartWrite("\nTest 2: ecAdd(2G, G) = 3G\n");
+    var two_g = result; // Save 2G from previous test
+    zisk.eip196.ecAdd(&two_g, &g_point, &result);
+
+    uartWrite("  Result (3G):\n");
+    uartWrite("    x = 0x");
+    for (result[0..32]) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
+        uartWrite(&buf);
+    }
+    uartWrite("\n    y = 0x");
+    for (result[32..64]) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
+        uartWrite(&buf);
+    }
+    uartWrite("\n");
+
+    // Test 3: ecMul with k = 3 (should match 3G from above)
+    uartWrite("\nTest 3: ecMul(G, 3) = 3G\n");
+    var scalar: [32]u8 = [_]u8{0} ** 32;
+    scalar[31] = 3; // k = 3 (big-endian)
+
+    var mul_result: [64]u8 = undefined;
+    zisk.eip196.ecMul(&g_point, &scalar, &mul_result);
+
+    uartWrite("  Result (3G via ecMul):\n");
+    uartWrite("    x = 0x");
+    for (mul_result[0..32]) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
+        uartWrite(&buf);
+    }
+    uartWrite("\n    y = 0x");
+    for (mul_result[32..64]) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
+        uartWrite(&buf);
+    }
+    uartWrite("\n");
+
+    // Verify ecMul(G, 3) == ecAdd(2G, G)
+    if (std.mem.eql(u8, &result, &mul_result)) {
+        uartWrite("  ✓ ecMul matches ecAdd result!\n");
+    } else {
+        uartWrite("  ✗ ecMul does NOT match ecAdd result!\n");
+    }
+
+    // Test 4: ecMul with larger scalar
+    uartWrite("\nTest 4: ecMul(G, 100)\n");
+    scalar = [_]u8{0} ** 32;
+    scalar[31] = 100; // k = 100 (big-endian)
+
+    zisk.eip196.ecMul(&g_point, &scalar, &mul_result);
+
+    uartWrite("  Result (100G):\n");
+    uartWrite("    x = 0x");
+    for (mul_result[0..32]) |byte| {
+        var buf: [2]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
+        uartWrite(&buf);
+    }
+    uartWrite("\n    y = 0x");
+    for (mul_result[32..64]) |byte| {
         var buf: [2]u8 = undefined;
         _ = std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable;
         uartWrite(&buf);
@@ -234,8 +280,8 @@ pub fn runDemo(allocator: std.mem.Allocator) !void {
         return error.StateUnchanged;
     }
 
-    // Test BN254 curve add circuit via CSR
-    uartWrite("\n=== Testing BN254 Curve Add Circuit (CSR) ===\n");
+    // Test EIP-196 BN254 operations
+    uartWrite("\n");
     testBn254CurveAddCircuit();
 
     uartWrite("\n=== Block transition completed successfully ===\n");

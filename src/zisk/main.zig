@@ -8,6 +8,7 @@
 
 pub const allocator = @import("allocator.zig");
 pub const circuits = @import("zisk_circuits.zig");
+pub const eip196 = @import("eip196.zig");
 
 // Re-export commonly used allocator types
 pub const ZiskAllocator = allocator.ZiskAllocator;
