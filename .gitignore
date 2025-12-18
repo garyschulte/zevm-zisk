@@ -12,7 +12,7 @@ zig-cache/
 *~
 
 # zisk build tree
-zisk/
+/zisk/
 
 # OS
 .DS_Store
