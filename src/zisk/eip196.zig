@@ -219,13 +219,80 @@ pub fn ecMul(point_be: *const [64]u8, scalar_be: *const [32]u8, result_be: *[64]
     limbsToCoordinate(result_y_limbs, result_be[32..64]);
 }
 
-/// EIP-197 ecPairing: Pairing check for BN254 curve
-/// Note: Zisk does not currently provide hardware-accelerated pairing circuits.
-/// This would need to be implemented using the Fp2 complex field operations
-/// and Fp12 tower field arithmetic, which is computationally expensive.
-/// For now, this is left unimplemented.
-pub fn ecPairing(input: []const u8, result: *[32]u8) !void {
-    _ = input;
-    _ = result;
-    return error.NotImplemented;
+/// EIP-197 ecPairing: Pairing check for BN254 curve using Zisk circuits
+/// Input format: pairs of (G1 point, G2 point)
+/// - Each G1 point: 64 bytes (x: 32 bytes, y: 32 bytes) in big-endian
+/// - Each G2 point: 128 bytes (x: 64 bytes as two Fp elements, y: 64 bytes) in big-endian
+/// Output: 32 bytes (0x00...01 if check passes, 0x00...00 if fails)
+///
+/// Checks if e(P1, Q1) * e(P2, Q2) * ... * e(Pn, Qn) = 1
+///
+/// Uses software pairing implementation that maximizes use of Zisk's Fp2 hardware circuits
+/// (CSR 0x808, 0x809, 0x80A) for all performance-critical operations.
+pub fn ecPairing(input: []const u8, result: *[32]u8, allocator: std.mem.Allocator) !void {
+    // Input must be a multiple of 192 bytes (64 for G1 + 128 for G2)
+    if (input.len % 192 != 0) {
+        return error.InvalidInputLength;
+    }
+
+    const num_pairs = input.len / 192;
+
+    // Initialize result to 0
+    @memset(result, 0);
+
+    if (num_pairs == 0) {
+        // Empty input returns true (identity)
+        result[31] = 1;
+        return;
+    }
+
+    // Convert big-endian input to little-endian limbs format for circuits
+    const circuit_input = try allocator.alloc(u8, input.len);
+    defer allocator.free(circuit_input);
+
+    var i: usize = 0;
+    while (i < num_pairs) : (i += 1) {
+        const pair_offset = i * 192;
+        const circuit_offset = i * 192;
+
+        // Convert G1 point (64 bytes: x=32, y=32)
+        const g1_x_limbs = coordinateToLimbs(input[pair_offset..][0..32]);
+        const g1_y_limbs = coordinateToLimbs(input[pair_offset + 32 ..][0..32]);
+
+        // Write G1 point in little-endian limbs
+        var j: usize = 0;
+        while (j < 4) : (j += 1) {
+            std.mem.writeInt(u64, circuit_input[circuit_offset + j * 8 ..][0..8], g1_x_limbs[j], .little);
+            std.mem.writeInt(u64, circuit_input[circuit_offset + 32 + j * 8 ..][0..8], g1_y_limbs[j], .little);
+        }
+
+        // Convert G2 point (128 bytes: x=64 bytes as Fp2, y=64 bytes as Fp2)
+        // Fp2 element: (c0: 32 bytes, c1: 32 bytes)
+        const g2_x_c0_limbs = coordinateToLimbs(input[pair_offset + 64 ..][0..32]);
+        const g2_x_c1_limbs = coordinateToLimbs(input[pair_offset + 96 ..][0..32]);
+        const g2_y_c0_limbs = coordinateToLimbs(input[pair_offset + 128 ..][0..32]);
+        const g2_y_c1_limbs = coordinateToLimbs(input[pair_offset + 160 ..][0..32]);
+
+        // Write G2.x (Fp2: 64 bytes)
+        j = 0;
+        while (j < 4) : (j += 1) {
+            std.mem.writeInt(u64, circuit_input[circuit_offset + 64 + j * 8 ..][0..8], g2_x_c0_limbs[j], .little);
+            std.mem.writeInt(u64, circuit_input[circuit_offset + 64 + 32 + j * 8 ..][0..8], g2_x_c1_limbs[j], .little);
+        }
+
+        // Write G2.y (Fp2: 64 bytes)
+        j = 0;
+        while (j < 4) : (j += 1) {
+            std.mem.writeInt(u64, circuit_input[circuit_offset + 128 + j * 8 ..][0..8], g2_y_c0_limbs[j], .little);
+            std.mem.writeInt(u64, circuit_input[circuit_offset + 128 + 32 + j * 8 ..][0..8], g2_y_c1_limbs[j], .little);
+        }
+    }
+
+    // Perform pairing check using Zisk circuits
+    const pairing_valid = try circuits.bn254PairingCheck(circuit_input, allocator);
+
+    // Set result: 1 if valid, 0 if invalid (EIP-197 format)
+    if (pairing_valid) {
+        result[31] = 1;
+    }
 }

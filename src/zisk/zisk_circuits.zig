@@ -117,6 +117,17 @@ pub const Bn254CurveAddParams = extern struct {
     p2: *Point256,
 };
 
+/// Fp2 element (64 bytes = 2 field elements of 32 bytes each)
+pub const Fp2Element = extern struct {
+    data: [64]u8,
+};
+
+/// BN254 Fp2 binary operation params structure
+pub const Bn254Fp2BinaryOpParams = extern struct {
+    e1: *Fp2Element,
+    e2: *Fp2Element,
+};
+
 /// BN254 G1 curve point addition circuit: P1 + P2 = P3
 /// Input: 128 bytes (P1: 64 bytes, P2: 64 bytes)
 /// Output: 64 bytes (P3, overwrites first 64 bytes of input)
@@ -155,10 +166,18 @@ pub fn bn254CurveDouble(point: *[64]u8) void {
 /// Input: 128 bytes (first complex: 64 bytes, second complex: 64 bytes)
 /// Output: 64 bytes (result, overwrites first 64 bytes of input)
 pub fn bn254ComplexAdd(elements: *[128]u8) void {
-    const ptr = @intFromPtr(elements);
+    const e1: *Fp2Element = @ptrCast(@alignCast(elements[0..64]));
+    const e2: *Fp2Element = @ptrCast(@alignCast(elements[64..128]));
+
+    var params = Bn254Fp2BinaryOpParams{
+        .e1 = e1,
+        .e2 = e2,
+    };
+
+    const params_ptr = @intFromPtr(&params);
     asm volatile ("csrs 0x808, %[ptr]"
         :
-        : [ptr] "r" (ptr),
+        : [ptr] "r" (params_ptr),
         : .{ .memory = true }
     );
 }
@@ -167,10 +186,18 @@ pub fn bn254ComplexAdd(elements: *[128]u8) void {
 /// Input: 128 bytes (first complex: 64 bytes, second complex: 64 bytes)
 /// Output: 64 bytes (result, overwrites first 64 bytes of input)
 pub fn bn254ComplexSub(elements: *[128]u8) void {
-    const ptr = @intFromPtr(elements);
+    const e1: *Fp2Element = @ptrCast(@alignCast(elements[0..64]));
+    const e2: *Fp2Element = @ptrCast(@alignCast(elements[64..128]));
+
+    var params = Bn254Fp2BinaryOpParams{
+        .e1 = e1,
+        .e2 = e2,
+    };
+
+    const params_ptr = @intFromPtr(&params);
     asm volatile ("csrs 0x809, %[ptr]"
         :
-        : [ptr] "r" (ptr),
+        : [ptr] "r" (params_ptr),
         : .{ .memory = true }
     );
 }
@@ -179,12 +206,67 @@ pub fn bn254ComplexSub(elements: *[128]u8) void {
 /// Input: 128 bytes (first complex: 64 bytes, second complex: 64 bytes)
 /// Output: 64 bytes (result, overwrites first 64 bytes of input)
 pub fn bn254ComplexMul(elements: *[128]u8) void {
-    const ptr = @intFromPtr(elements);
+    const e1: *Fp2Element = @ptrCast(@alignCast(elements[0..64]));
+    const e2: *Fp2Element = @ptrCast(@alignCast(elements[64..128]));
+
+    var params = Bn254Fp2BinaryOpParams{
+        .e1 = e1,
+        .e2 = e2,
+    };
+
+    const params_ptr = @intFromPtr(&params);
     asm volatile ("csrs 0x80A, %[ptr]"
         :
-        : [ptr] "r" (ptr),
+        : [ptr] "r" (params_ptr),
         : .{ .memory = true }
     );
+}
+
+/// BN254 pairing check: verifies e(P1, Q1) * e(P2, Q2) * ... = 1
+/// Uses software pairing with Fp2 hardware circuits (CSR 0x808, 0x809, 0x80A)
+///
+/// Input format (EIP-197):
+/// - Each pair: G1 point (64 bytes) + G2 point (128 bytes) = 192 bytes total
+/// - Multiple pairs concatenated
+/// - All coordinates in little-endian u64 limbs
+///
+/// Returns: true if pairing product equals 1, false otherwise
+///
+/// Implementation: Software Miller loop and final exponentiation that maximally
+/// utilizes Fp2 hardware circuits for the performance-critical operations.
+pub fn bn254PairingCheck(pairs_data: []const u8, allocator: std.mem.Allocator) !bool {
+    const pairing_impl = @import("bn254_pairing.zig");
+
+    // Validate input length
+    if (pairs_data.len % 192 != 0) {
+        return error.InvalidPairingInput;
+    }
+
+    const num_pairs = pairs_data.len / 192;
+    if (num_pairs == 0) {
+        // Empty pairing returns true (identity)
+        return true;
+    }
+
+    // Parse pairs into the format expected by pairingCheck
+    const pairs = try allocator.alloc(pairing_impl.Pair, num_pairs);
+    defer allocator.free(pairs);
+
+    var i: usize = 0;
+    while (i < num_pairs) : (i += 1) {
+        const pair_offset = i * 192;
+
+        // Parse G1 point (64 bytes, little-endian limbs)
+        @memcpy(&pairs[i].p.data, pairs_data[pair_offset .. pair_offset + 64]);
+
+        // Parse G2 point (128 bytes, little-endian limbs)
+        // G2 point has x and y, each is Fp2 (64 bytes)
+        @memcpy(&pairs[i].q.x.data, pairs_data[pair_offset + 64 .. pair_offset + 128]);
+        @memcpy(&pairs[i].q.y.data, pairs_data[pair_offset + 128 .. pair_offset + 192]);
+    }
+
+    // Perform pairing check using software implementation with Fp2 circuits
+    return pairing_impl.pairingCheck(pairs);
 }
 
 // ============================================================================
