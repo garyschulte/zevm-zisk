@@ -2,6 +2,7 @@ const std = @import("std");
 const zisk = @import("zisk");
 const demo = @import("demo.zig");
 const state_transition = @import("state_transition.zig");
+const zkvm_io = @import("zkvm_io.zig");
 
 /// Zisk zkVM UART address for console output
 const ZISK_UART: *volatile u8 = @ptrFromInt(0xa0000200);
@@ -58,8 +59,10 @@ export fn _start_main() noreturn {
     uartWrite("INIT\n");
 
     // Call main
-    main() catch {
-        uartWrite("ERROR\n");
+    main() catch |err| {
+        uartWrite("ERROR: ");
+        uartWrite(@errorName(err));
+        uartWrite("\n");
         zkExit(1);
     };
 
@@ -74,14 +77,13 @@ pub fn main() !void {
     var zisk_alloc = zisk.ZiskAllocator.init();
     const allocator = zisk_alloc.allocator();
 
-    // Check if we have input data in INPUT memory region
-    const input_ptr: *const u64 = @ptrFromInt(0x90000000);
-    const input_size = std.mem.bigToNative(u64, input_ptr.*);
+    // Use zkVM standard I/O interface to check for input
+    const input_data = zkvm_io.read_input_slice();
 
-    if (input_size > 0 and input_size < 0x08000000) {
+    if (input_data.len > 0) {
         // We have stateless input data - execute state transition
-        uartWrite("Reading stateless input from INPUT region...\n");
-        try state_transition.executeStateTransition(allocator);
+        uartWrite("Reading stateless input via zkVM I/O interface...\n");
+        try state_transition.executeStateTransitionFromBytes(allocator, input_data);
     } else {
         // No input data - run demo mode
         uartWrite("No input data found, running demo mode...\n");

@@ -5,40 +5,21 @@ const stateless = @import("stateless_input.zig");
 const deserialize = @import("deserialize.zig");
 const witness_loader = @import("witness_loader.zig");
 
-/// Zisk zkVM INPUT memory region where serialized StatelessInput data is loaded
-/// INPUT (r): 0x90000000 - 0x98000000 [128MB max]
-const ZISK_INPUT_BASE: usize = 0x90000000;
-const ZISK_INPUT_SIZE: usize = 0x08000000; // 128MB
-
-/// Read the input size from the first 8 bytes of INPUT region
-/// Format: [size: u64 big-endian][data: size bytes]
-fn readInputSize() u64 {
-    const ptr: *const u64 = @ptrFromInt(ZISK_INPUT_BASE);
-    return std.mem.bigToNative(u64, ptr.*);
-}
-
-/// Get a slice to the input data (after the 8-byte size prefix)
-fn getInputData(size: u64) []const u8 {
-    if (size == 0 or size > ZISK_INPUT_SIZE - 8) {
-        return &.{}; // Empty or invalid size
-    }
-    const data_ptr: [*]const u8 = @ptrFromInt(ZISK_INPUT_BASE + 8);
-    return data_ptr[0..size];
-}
-
-/// Execute a state transition from serialized StatelessInput
-/// Reads input from Zisk zkVM INPUT memory region (0x90000000)
+/// Legacy wrapper: Execute a state transition from Zisk INPUT memory region
+/// Deprecated: Use executeStateTransitionFromBytes with zkvm_io instead
 pub fn executeStateTransition(allocator: std.mem.Allocator) !void {
-    // Read input size
-    const input_size = readInputSize();
-    if (input_size == 0) {
-        return error.NoInputData;
-    }
+    const zkvm_io = @import("zkvm_io.zig");
+    const input_data = zkvm_io.read_input_slice();
+    try executeStateTransitionFromBytes(allocator, input_data);
+}
 
-    // Get input data slice
-    const input_data = getInputData(input_size);
+/// Execute a state transition from serialized StatelessInput bytes
+pub fn executeStateTransitionFromBytes(
+    allocator: std.mem.Allocator,
+    input_data: []const u8,
+) !void {
     if (input_data.len == 0) {
-        return error.InvalidInputSize;
+        return error.NoInputData;
     }
 
     // Deserialize StatelessInput

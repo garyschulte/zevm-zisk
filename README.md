@@ -58,7 +58,7 @@ zig build gen-input
   stateless_input.bin
 
 # The generated binary can be loaded into Zisk INPUT region
-./zisk/target/release/ziskemu -e zig-out/bin/zevm-zisk --input stateless_input.bin
+./zisk/target/release/ziskemu -e zig-out/bin/zevm-zisk --inputs stateless_input.bin
 ```
 
 ### Input Format
@@ -66,9 +66,9 @@ zig build gen-input
 The tool expects:
 - **block_json**: Output from `debug_getRawBlock` RPC call (RLP-encoded block)
 - **witness_json**: Output from `debug_executionWitness` RPC call (state preimages)
-- **output_bin**: Binary file with 8-byte size prefix + serialized StatelessInput
+- **output_bin**: Raw binary serialized StatelessInput (ziskemu adds the 16-byte header automatically)
 
-The binary format is designed to be loaded directly into Zisk zkVM's INPUT memory region (0x90000000).
+The binary file contains just the serialized StatelessInput data. When loaded via ziskemu's `--inputs` flag, the emulator automatically adds a 16-byte header (8 bytes free_input + 8 bytes size) before placing it in the INPUT memory region at 0x90000000.
 
 **WIP**: zevm-zisk is a proof-of-concept state transition function specifically for zisk zkevm, it: 
 - Targets `riscv64-freestanding`
@@ -77,7 +77,24 @@ The binary format is designed to be loaded directly into Zisk zkVM's INPUT memor
 - Sets the medium code model for full 64-bit addressing
 - Uses mock storage, mock blocks
 
+## zkVM I/O Interface
+
+This project implements the [proposed zkVM I/O Interface Standard](https://github.com/eth-act/zkvm-standards/pull/8/) for portable I/O operations:
+
+```zig
+const zkvm_io = @import("zkvm_io.zig");
+
+// Read private input (zero-copy from INPUT region)
+const input_data = zkvm_io.read_input_slice();
+
+// Write public output (to OUTPUT region)
+zkvm_io.write_output_slice(result);
+```
+
+See [docs/zkvm-io-interface.md](docs/zkvm-io-interface.md) for complete documentation.
+
 ### Recent Progress
+- ✅ zkVM I/O Interface Standard implementation
 - ✅ StatelessInput structure (Block + ExecutionWitness)
 - ✅ Binary serialization/deserialization
 - ✅ RLP decoder for blocks

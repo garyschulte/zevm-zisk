@@ -243,7 +243,10 @@ pub fn serializeStatelessInput(allocator: std.mem.Allocator, input: *const state
     return try serializer.toOwnedSlice();
 }
 
-/// Serialize StatelessInput with 8-byte size prefix (for Zisk INPUT region)
+/// Serialize StatelessInput with ziskemu INPUT region format:
+/// - 8 bytes: free_input (0)
+/// - 8 bytes: input_len (little-endian)
+/// - N bytes: input data
 pub fn serializeStatelessInputWithSize(allocator: std.mem.Allocator, input: *const stateless.StatelessInput) ![]u8 {
     var serializer = Serializer.init(allocator);
     defer serializer.deinit();
@@ -252,10 +255,17 @@ pub fn serializeStatelessInputWithSize(allocator: std.mem.Allocator, input: *con
     const data = try serializer.toOwnedSlice();
     defer allocator.free(data);
 
-    // Prepend size
-    var result = try allocator.alloc(u8, 8 + data.len);
-    std.mem.writeInt(u64, result[0..8], data.len, .big);
-    @memcpy(result[8..], data);
+    // Prepend 8 bytes of zeros (free_input) + 8 bytes of size (little-endian)
+    var result = try allocator.alloc(u8, 16 + data.len);
+
+    // Write free_input (8 bytes of zeros)
+    @memset(result[0..8], 0);
+
+    // Write input_len (little-endian)
+    std.mem.writeInt(u64, result[8..16], data.len, .little);
+
+    // Write actual data
+    @memcpy(result[16..], data);
 
     return result;
 }

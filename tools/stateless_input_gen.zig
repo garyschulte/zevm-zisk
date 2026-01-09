@@ -82,14 +82,12 @@ pub fn main() !void {
     input.block = block;
     input.witness = witness;
 
-    // Serialize to binary with size prefix
+    // Serialize to binary format (no header - ziskemu adds it automatically)
     std.debug.print("Serializing to binary format...\n", .{});
-    const binary_data = try serialize.serializeStatelessInputWithSize(allocator, &input);
+    const binary_data = try serialize.serializeStatelessInput(allocator, &input);
     defer allocator.free(binary_data);
 
-    std.debug.print("Binary size: {d} bytes\n", .{binary_data.len});
-    std.debug.print("  Size prefix: {d} bytes\n", .{8});
-    std.debug.print("  Payload: {d} bytes\n", .{binary_data.len - 8});
+    std.debug.print("Binary size: {d} bytes (ziskemu will add 16-byte header)\n", .{binary_data.len});
     std.debug.print("\n", .{});
 
     // Write to output file
@@ -101,5 +99,5 @@ pub fn main() !void {
 
     std.debug.print("✓ Successfully generated {s}\n", .{output_path});
     std.debug.print("\nYou can now use this file as input to the Zisk zkVM:\n", .{});
-    std.debug.print("  ziskemu -e zevm-zisk --input {s}\n", .{output_path});
+    std.debug.print("  ./zisk/target/release/ziskemu -e zig-out/bin/zevm-zisk --inputs {s}\n", .{output_path});
 }
