@@ -89,4 +89,68 @@ pub fn build(b: *std.Build) void {
     run_cmd.addArtifactArg(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run_cmd.step);
+
+    // ============================================================
+    // StatelessInput Generator Tool (for host OS, not cross-compiled)
+    // ============================================================
+
+    const host_target = b.standardTargetOptions(.{});
+
+    // Get zevm dependency for host target (reuse optimize from above)
+    const zevm_host_dep = b.dependency("zevm", .{
+        .target = host_target,
+        .optimize = optimize,
+    });
+
+    const primitives_host = zevm_host_dep.module("primitives");
+    const context_host = zevm_host_dep.module("context");
+
+    // Create stateless_input module for tools
+    const stateless_input_mod = b.addModule("stateless_input", .{
+        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/stateless_input.zig" } },
+        .target = host_target,
+        .optimize = optimize,
+    });
+    stateless_input_mod.addImport("primitives", primitives_host);
+    stateless_input_mod.addImport("context", context_host);
+
+    // Create serialize module for tools
+    const serialize_mod = b.addModule("serialize", .{
+        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/serialize.zig" } },
+        .target = host_target,
+        .optimize = optimize,
+    });
+    serialize_mod.addImport("primitives", primitives_host);
+    serialize_mod.addImport("stateless_input", stateless_input_mod);
+
+    // StatelessInput generator tool
+    const tool_exe = b.addExecutable(.{
+        .name = "stateless-input-gen",
+        .root_module = b.addModule("stateless-input-gen", .{
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "tools/stateless_input_gen.zig" } },
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+
+    tool_exe.root_module.addImport("primitives", primitives_host);
+    tool_exe.root_module.addImport("context", context_host);
+    tool_exe.root_module.addImport("stateless_input", stateless_input_mod);
+    tool_exe.root_module.addImport("serialize", serialize_mod);
+
+    b.installArtifact(tool_exe);
+
+    // Build step for tool
+    const tool_step = b.step("input-tool", "Build the stateless-input-gen tool");
+    tool_step.dependOn(&tool_exe.step);
+
+    // Run step for tool with test vectors
+    const run_tool_step = b.step("gen-input", "Generate StatelessInput from test vectors");
+    const run_tool_cmd = b.addRunArtifact(tool_exe);
+    run_tool_cmd.addArgs(&.{
+        "test/vectors/test_block.json",
+        "test/vectors/test_block_witness.json",
+        "test_stateless_input.bin",
+    });
+    run_tool_step.dependOn(&run_tool_cmd.step);
 }
