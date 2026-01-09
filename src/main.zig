@@ -1,6 +1,7 @@
 const std = @import("std");
 const zisk = @import("zisk");
 const demo = @import("demo.zig");
+const state_transition = @import("state_transition.zig");
 
 /// Zisk zkVM UART address for console output
 const ZISK_UART: *volatile u8 = @ptrFromInt(0xa0000200);
@@ -73,8 +74,19 @@ pub fn main() !void {
     var zisk_alloc = zisk.ZiskAllocator.init();
     const allocator = zisk_alloc.allocator();
 
-    // Run the demo transactions and precompile tests
-    try demo.runDemo(allocator);
+    // Check if we have input data in INPUT memory region
+    const input_ptr: *const u64 = @ptrFromInt(0x90000000);
+    const input_size = std.mem.bigToNative(u64, input_ptr.*);
+
+    if (input_size > 0 and input_size < 0x08000000) {
+        // We have stateless input data - execute state transition
+        uartWrite("Reading stateless input from INPUT region...\n");
+        try state_transition.executeStateTransition(allocator);
+    } else {
+        // No input data - run demo mode
+        uartWrite("No input data found, running demo mode...\n");
+        try demo.runDemo(allocator);
+    }
 }
 
 /// Panic handler for zisk zkVM
